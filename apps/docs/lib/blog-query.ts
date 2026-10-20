@@ -4,19 +4,13 @@ import { NotFoundError } from "@usemarble/sdk/models/errors";
 import { notFound } from "next/navigation";
 import { cache } from "react";
 
-const TRAILING_SLASHES_REGEX = /\/+$/;
-const API_VERSION_PATH_REGEX = /\/v1$/;
-
 function createClient(): Marble | undefined {
 	const apiKey = process.env.MARBLE_API_KEY?.trim();
 	if (!apiKey) {
 		return;
 	}
 
-	const serverURL = process.env.MARBLE_API_URL?.trim()
-		.replace(TRAILING_SLASHES_REGEX, "")
-		.replace(API_VERSION_PATH_REGEX, "");
-	return new Marble({ apiKey, serverURL: serverURL || undefined });
+	return new Marble({ apiKey });
 }
 
 export function isPublished(post: Pick<Post, "publishedAt">): boolean {

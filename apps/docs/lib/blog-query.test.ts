@@ -64,20 +64,14 @@ function listResponse(
 }
 
 const originalApiKey = process.env.MARBLE_API_KEY;
-const originalApiUrl = process.env.MARBLE_API_URL;
 const originalFetch = globalThis.fetch;
 
 afterEach(() => {
 	globalThis.fetch = originalFetch;
-	for (const [name, value] of [
-		["MARBLE_API_KEY", originalApiKey],
-		["MARBLE_API_URL", originalApiUrl],
-	] as const) {
-		if (value === undefined) {
-			Reflect.deleteProperty(process.env, name);
-		} else {
-			process.env[name] = value;
-		}
+	if (originalApiKey === undefined) {
+		Reflect.deleteProperty(process.env, "MARBLE_API_KEY");
+	} else {
+		process.env.MARBLE_API_KEY = originalApiKey;
 	}
 });
 
@@ -92,9 +86,8 @@ describe("Marble blog query", () => {
 		expect(fetch).not.toHaveBeenCalled();
 	});
 
-	test("uses the API key and normalized custom server URL", async () => {
+	test("sends the trimmed API key to the Marble API", async () => {
 		process.env.MARBLE_API_KEY = "  test-token  ";
-		process.env.MARBLE_API_URL = "https://marble.example/custom/v1///";
 		const fetch = spyOn(globalThis, "fetch").mockResolvedValueOnce(
 			listResponse([post()])
 		);
@@ -104,7 +97,7 @@ describe("Marble blog query", () => {
 			throw new Error("Marble did not request posts");
 		}
 		const request = new Request(firstCall[0], firstCall[1]);
-		expect(request.url).toContain("https://marble.example/custom/v1/posts?");
+		expect(request.url).toContain("https://api.marblecms.com/v1/posts?");
 		const url = new URL(request.url);
 		expect(url.searchParams.get("limit")).toBe("100");
 		expect(url.searchParams.get("order")).toBe("desc");
@@ -114,7 +107,6 @@ describe("Marble blog query", () => {
 
 	test("returns every page in descending publish order and filters future content", async () => {
 		process.env.MARBLE_API_KEY = "test-token";
-		Reflect.deleteProperty(process.env, "MARBLE_API_URL");
 		const older = post({
 			id: "older",
 			slug: "older",
