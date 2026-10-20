@@ -47,7 +47,7 @@ export async function generateSitemapEntries(): Promise<MetadataRoute.Sitemap> {
 		url: `${SITE_URL}${path}`,
 	}));
 
-	const posts = await getPosts().catch((error: unknown) => {
+	const posts = await getPosts().catch((error) => {
 		console.error(
 			"Failed to list blog posts for sitemap:",
 			error instanceof Error ? error.message : "Unknown error"
