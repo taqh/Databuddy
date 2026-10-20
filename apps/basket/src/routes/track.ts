@@ -17,7 +17,7 @@ import {
 import { checkAutumnUsage } from "@lib/billing";
 import { parseCorsSafeJson } from "@lib/cors-safe-json";
 import { insertCustomEvents } from "@lib/event-service";
-import { runFork, send, sendBatch } from "@lib/producer";
+import { runFork, runPromise, send, sendBatch } from "@lib/producer";
 import { ratelimit } from "@databuddy/redis/rate-limit";
 import { redis } from "@databuddy/redis/redis";
 import {
@@ -25,6 +25,7 @@ import {
 	setupCheckNonce,
 } from "@databuddy/shared/bot-detection/ai-agents";
 import {
+	BotCategory,
 	CONTENT_FORMATS,
 	contentFormat,
 	isAssetPath,
@@ -52,6 +53,7 @@ import {
 	VALIDATION_LIMITS,
 	validatePayloadSize,
 } from "@utils/validation";
+import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { Elysia } from "elysia";
 import { useLogger } from "evlog/elysia";
@@ -89,6 +91,7 @@ const vercelLogSchema = z.object({
 });
 
 const VERCEL_LOGS_MAX_BYTES = 10 * 1024 * 1024;
+const VERCEL_REQUEST_TTL_SECONDS = 6 * 3600 + 300;
 
 const uint32 = z.number().int().min(0).max(4_294_967_295);
 
@@ -261,6 +264,71 @@ function parseVercelLogs(body: Uint8Array): {
 		}
 	});
 	return { entries, malformed };
+}
+
+const CLAIM_VERCEL_REQUEST_SCRIPT = `
+-- claim-vercel-request
+local current = redis.call("GET", KEYS[1])
+if current and not (ARGV[3] == "1" and string.sub(current, 1, 2) == "0:") then
+	return 0
+end
+redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[2])
+return 1
+`;
+
+const RELEASE_VERCEL_REQUEST_SCRIPT = `
+-- release-vercel-request
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then
+	return 0
+end
+return redis.call("DEL", KEYS[1])
+`;
+
+interface VercelRequestClaim {
+	key: string;
+	value: string;
+}
+
+function isServedStatus(status: number): boolean {
+	return status === 0 || status === 304 || (status >= 200 && status < 300);
+}
+
+async function claimVercelRequest(
+	websiteId: string,
+	requestKey: string,
+	status: number,
+	owner: string
+): Promise<VercelRequestClaim | null> {
+	if (requestKey === "") {
+		return { key: "", value: "" };
+	}
+	const key = `vercel-drain-request:${websiteId}:${createHash("sha256").update(requestKey).digest("base64url")}`;
+	const value = `${status}:${owner}`;
+	try {
+		const claimed = await redis.eval(
+			CLAIM_VERCEL_REQUEST_SCRIPT,
+			1,
+			key,
+			value,
+			VERCEL_REQUEST_TTL_SECONDS,
+			isServedStatus(status) ? "0" : "1"
+		);
+		return claimed === 1 ? { key, value } : null;
+	} catch {
+		return { key: "", value: "" };
+	}
+}
+
+async function releaseVercelRequests(
+	claims: VercelRequestClaim[]
+): Promise<void> {
+	await Promise.all(
+		claims
+			.filter((claim) => claim.key !== "")
+			.map((claim) =>
+				redis.eval(RELEASE_VERCEL_REQUEST_SCRIPT, 1, claim.key, claim.value)
+			)
+	);
 }
 
 async function loadHostCheck(websiteId: string) {
@@ -803,8 +871,9 @@ export const vercelDrainRoute = new Elysia().post(
 			}
 
 			const now = Date.now();
-			const seenRequests = new Set<string>();
+			const seenRequests = new Map<string, AiTrafficSpansInsert | null>();
 			const spans: AiTrafficSpansInsert[] = [];
+			const spanKeys: string[] = [];
 			let foreignHosts = 0;
 			for (const entry of batch.entries) {
 				const parsed = vercelLogSchema.safeParse(entry);
@@ -812,21 +881,28 @@ export const vercelDrainRoute = new Elysia().post(
 					continue;
 				}
 				const { id, proxy, requestId, timestamp } = parsed.data;
-				const requestKey = requestId || id;
-				if (
-					proxy.statusCode === -1 ||
-					(requestKey && seenRequests.has(requestKey))
-				) {
+				const userAgent = proxy.userAgent?.[0] ?? "";
+				const requestKey =
+					proxy.timestamp === undefined
+						? requestId || id
+						: `${proxy.timestamp} ${proxy.method} ${proxy.host} ${proxy.path} ${userAgent}`;
+				if (proxy.statusCode === -1) {
+					continue;
+				}
+				if (requestKey && seenRequests.has(requestKey)) {
+					const stored = seenRequests.get(requestKey);
+					if (stored?.status_code === 0) {
+						stored.status_code = Math.max(proxy.statusCode ?? 0, 0);
+					}
 					continue;
 				}
 				if (requestKey) {
-					seenRequests.add(requestKey);
+					seenRequests.set(requestKey, null);
 				}
 				if (!hostCheck.isHostAllowed(proxy.host)) {
 					foreignHosts += 1;
 					continue;
 				}
-				const userAgent = proxy.userAgent?.[0] ?? "";
 				const pathname = proxy.path.split("?")[0] ?? "";
 				if (
 					(await recordedSetupCheck(websiteId, userAgent)) ||
@@ -835,10 +911,13 @@ export const vercelDrainRoute = new Elysia().post(
 					continue;
 				}
 				const columns = agentSpanColumns({ userAgent });
-				if (!columns.agent_id) {
+				if (
+					!columns.agent_id &&
+					columns.bot_type !== BotCategory.SEARCH_ENGINE
+				) {
 					continue;
 				}
-				spans.push({
+				const span: AiTrafficSpansInsert = {
 					...columns,
 					client_id: websiteId,
 					timestamp: recentTimestamp(proxy.timestamp ?? timestamp, now),
@@ -851,16 +930,43 @@ export const vercelDrainRoute = new Elysia().post(
 					source: "vercel",
 					status_code: Math.max(proxy.statusCode ?? 0, 0),
 					verification: hostCheck.verification,
-				});
+				};
+				if (requestKey) {
+					seenRequests.set(requestKey, span);
+				}
+				spans.push(span);
+				spanKeys.push(requestKey ?? "");
 			}
 
-			if (spans.length > 0) {
-				runFork(sendBatch("analytics-ai-traffic-spans", spans));
+			const owner = crypto.randomUUID();
+			const claims = await Promise.all(
+				spans.map((span, index) =>
+					claimVercelRequest(
+						websiteId,
+						spanKeys.at(index) ?? "",
+						span.status_code ?? 0,
+						owner
+					)
+				)
+			);
+			const fresh = spans.filter((_, index) => claims.at(index) !== null);
+			if (fresh.length > 0) {
+				try {
+					await runPromise(sendBatch("analytics-ai-traffic-spans", fresh));
+				} catch (error) {
+					await releaseVercelRequests(
+						claims.filter((claim) => claim !== null)
+					).catch(() => {
+						log.set({ vercel_claim_release: "failed" });
+					});
+					throw error;
+				}
 			}
 			log.set({
 				vercel: {
 					entries: batch.entries.length,
-					stored: spans.length,
+					stored: fresh.length,
+					redelivered: spans.length - fresh.length,
 					malformed_lines: batch.malformed,
 					foreign_hosts: foreignHosts,
 				},
