@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import type { Post, PostsListResponse } from "@usemarble/sdk/models";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it, spyOn } from "bun:test";
@@ -407,7 +408,7 @@ describe("search discovery", () => {
 		const originalApiKey = process.env.MARBLE_API_KEY;
 		const fetch = spyOn(globalThis, "fetch");
 		try {
-			process.env.NODE_ENV = "production";
+			Reflect.set(process.env, "NODE_ENV", "production");
 			process.env.MARBLE_API_KEY = "test-token";
 			fetch.mockResolvedValueOnce(Response.json(null, { status: 503 }));
 			const fallback = await generateSitemapEntries();
@@ -438,17 +439,55 @@ describe("search discovery", () => {
 			]) {
 				expect(urls).not.toContain(`https://www.databuddy.cc${path}`);
 			}
+			const example: Post = {
+				id: "example",
+				slug: "example",
+				title: "Example",
+				status: "published",
+				featured: false,
+				coverImage: null,
+				description: "Example description",
+				publishedAt: new Date("2024-01-01"),
+				updatedAt: new Date("2024-02-01"),
+				authors: [
+					{
+						id: "author",
+						name: "Example Author",
+						image: null,
+						bio: null,
+						role: null,
+						slug: "example-author",
+						socials: [],
+					},
+				],
+				category: {
+					id: "guides",
+					name: "Guides",
+					slug: "guides",
+					description: null,
+				},
+				tags: [],
+				fields: {},
+				content: "<p>Example content</p>",
+			};
+			const draft: Post = {
+				...example,
+				id: "draft",
+				slug: "draft",
+				status: "draft",
+			};
 			fetch.mockResolvedValueOnce(
 				Response.json({
-					posts: [
-						{
-							slug: "example",
-							publishedAt: "2024-01-01",
-							updatedAt: "2024-02-01",
-						},
-						{ slug: "draft", status: "draft", publishedAt: "2024-01-01" },
-					],
-				})
+					posts: [example, draft],
+					pagination: {
+						limit: 100,
+						currentPage: 1,
+						nextPage: null,
+						previousPage: null,
+						totalPages: 1,
+						totalItems: 2,
+					},
+				} satisfies PostsListResponse)
 			);
 			const entries = await generateSitemapEntries();
 			expect(entries.filter((entry) => entry.url.includes("/blog/"))).toEqual([
@@ -462,7 +501,7 @@ describe("search discovery", () => {
 			if (originalNodeEnv === undefined) {
 				Reflect.deleteProperty(process.env, "NODE_ENV");
 			} else {
-				process.env.NODE_ENV = originalNodeEnv;
+				Reflect.set(process.env, "NODE_ENV", originalNodeEnv);
 			}
 			if (originalApiKey === undefined) {
 				Reflect.deleteProperty(process.env, "MARBLE_API_KEY");

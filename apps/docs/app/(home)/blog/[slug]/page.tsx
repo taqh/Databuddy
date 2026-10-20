@@ -11,12 +11,7 @@ import { SITE_URL } from "@/app/util/constants";
 import { Footer } from "@/components/footer";
 import { Prose } from "@/components/prose";
 import { StructuredData } from "@/components/structured-data";
-import {
-	getPosts,
-	getSinglePost,
-	isPublished,
-	getPostModifiedAt,
-} from "@/lib/blog-query";
+import { getPosts, getSinglePost, getPostModifiedAt } from "@/lib/blog-query";
 
 const STRIP_HTML_REGEX = /<[^>]+>/g;
 const WORD_SPLIT_REGEX = /\s+/;
@@ -50,16 +45,15 @@ function toMetaDescription(description: string): string {
 export const revalidate = 300;
 
 export async function generateStaticParams() {
-	const result = await getPosts();
-	if ("error" in result) {
+	try {
+		return (await getPosts()).map((post) => ({ slug: post.slug }));
+	} catch (error) {
 		console.error(
-			`Failed to list blog posts for static params: ${result.status} ${result.statusText}`
+			"Failed to list blog posts for static params:",
+			error instanceof Error ? error.message : "Unknown error"
 		);
 		return [];
 	}
-	return result.posts.filter(isPublished).map((post) => ({
-		slug: post.slug,
-	}));
 }
 
 interface PageProps {

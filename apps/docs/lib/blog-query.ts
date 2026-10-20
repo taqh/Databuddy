@@ -1,231 +1,85 @@
+import { Marble } from "@usemarble/sdk";
+import type { Post } from "@usemarble/sdk/models";
+import { NotFoundError } from "@usemarble/sdk/models/errors";
 import { notFound } from "next/navigation";
 import { cache } from "react";
 
-const DEFAULT_MARBLE_API_URL = "https://api.marblecms.com/v1";
-const API_VERSION_PATH_REGEX = /\/v\d+$/;
-const LEADING_SLASHES_REGEX = /^\/+/;
 const TRAILING_SLASHES_REGEX = /\/+$/;
+const API_VERSION_PATH_REGEX = /\/v1$/;
 
-interface FetchError {
-	error: true;
-	status: number;
-	statusText: string;
-	unconfigured?: true;
-}
-
-interface MarbleAuthor {
-	bio?: string | null;
-	id: string;
-	image?: string | null;
-	name: string;
-	role?: string | null;
-	slug?: string;
-	socials?: { platform: string; url: string }[];
-}
-
-interface MarbleCategory {
-	description?: string | null;
-	id: string;
-	name: string;
-	slug: string;
-}
-
-interface MarbleTag {
-	description?: string | null;
-	id: string;
-	name: string;
-	slug: string;
-}
-
-export interface Post {
-	attribution?: { author: string; url: string } | null;
-	authors: MarbleAuthor[];
-	category?: MarbleCategory | null;
-	content: string;
-	coverImage?: string | null;
-	description: string;
-	featured?: boolean;
-	fields?: Record<string, unknown>;
-	id: string;
-	publishedAt: Date | string;
-	slug: string;
-	status?: "published" | "draft" | string;
-	tags?: MarbleTag[];
-	title: string;
-	updatedAt?: Date | string;
-}
-
-export interface MarblePostList {
-	pagination?: {
-		currentPage: number;
-		limit: number;
-		nextPage: number | null;
-		previousPage: number | null;
-		totalItems: number;
-		totalPages: number;
-	};
-	posts: Post[];
-}
-
-export interface MarblePost {
-	post: Post;
-}
-
-type MarbleRequest =
-	| {
-			headers: HeadersInit;
-			url: string;
-	  }
-	| FetchError;
-
-export function normalizeMarbleApiUrl(value: string | undefined): string {
-	const trimmedValue = value?.trim();
-	const baseUrl = (trimmedValue || DEFAULT_MARBLE_API_URL).replace(
-		TRAILING_SLASHES_REGEX,
-		""
-	);
-	return API_VERSION_PATH_REGEX.test(baseUrl) ? baseUrl : `${baseUrl}/v1`;
-}
-
-export function createMarbleRequest(
-	endpoint: string,
-	env: Record<string, string | undefined> = process.env
-): MarbleRequest {
-	const apiKey = env.MARBLE_API_KEY?.trim();
-	const workspaceKey = env.MARBLE_WORKSPACE_KEY?.trim();
-	const apiUrl = normalizeMarbleApiUrl(env.MARBLE_API_URL);
-	const normalizedEndpoint = endpoint.replace(LEADING_SLASHES_REGEX, "");
-
-	if (apiKey) {
-		return {
-			headers: {
-				Authorization: apiKey,
-			},
-			url: `${apiUrl}/${normalizedEndpoint}`,
-		};
+function createClient(): Marble | undefined {
+	const apiKey = process.env.MARBLE_API_KEY?.trim();
+	if (!apiKey) {
+		return;
 	}
 
-	if (workspaceKey) {
-		return {
-			headers: {},
-			url: `${apiUrl}/${encodeURIComponent(workspaceKey)}/${normalizedEndpoint}`,
-		};
-	}
-
-	return {
-		error: true,
-		status: 500,
-		statusText: "Environment variables not configured",
-		unconfigured: true,
-	};
+	const serverURL = process.env.MARBLE_API_URL?.trim()
+		.replace(TRAILING_SLASHES_REGEX, "")
+		.replace(API_VERSION_PATH_REGEX, "");
+	return new Marble({ apiKey, serverURL: serverURL || undefined });
 }
 
-async function fetchFromMarble<T>(
-	endpoint: string,
-	options?: { returnStatusOnError?: boolean }
-): Promise<T | FetchError> {
-	try {
-		const request = createMarbleRequest(endpoint);
-		if ("error" in request) {
-			if (options?.returnStatusOnError) {
-				return request;
-			}
-			throw new Error(
-				"MARBLE_API_KEY or MARBLE_WORKSPACE_KEY environment variable is required"
-			);
-		}
-
-		const response = await fetch(request.url, { headers: request.headers });
-		if (!response.ok) {
-			if (options?.returnStatusOnError) {
-				return {
-					error: true,
-					status: response.status,
-					statusText: response.statusText,
-				};
-			}
-			throw new Error(
-				`Failed to fetch ${endpoint}: ${response.status} ${response.statusText}`
-			);
-		}
-		const data = (await response.json()) as
-			| T
-			| { error?: unknown; success?: false };
-		if (
-			typeof data === "object" &&
-			data !== null &&
-			"success" in data &&
-			data.success === false
-		) {
-			throw new Error(`Marble returned an error for ${endpoint}`);
-		}
-		return data as T;
-	} catch (error) {
-		console.error(`Error fetching ${endpoint}:`, error);
-		if (options?.returnStatusOnError) {
-			return {
-				error: true,
-				status: 500,
-				statusText: "Internal Error",
-			};
-		}
-		throw error;
-	}
-}
-
-function withPostListParams() {
-	return new URLSearchParams({
-		limit: "100",
-		order: "desc",
-		status: "published",
-	}).toString();
-}
-
-export function createPostListEndpoint() {
-	return `posts?${withPostListParams()}`;
-}
-
-export const getPosts = cache(() =>
-	fetchFromMarble<MarblePostList>(createPostListEndpoint(), {
-		returnStatusOnError: true,
-	})
-);
-
-export const getSinglePost = cache(async (slug: string) => {
-	const result = await fetchFromMarble<MarblePost>(
-		`posts/${encodeURIComponent(slug)}`,
-		{ returnStatusOnError: true }
-	);
-	if ("error" in result) {
-		if (result.status === 404 || result.unconfigured) {
-			notFound();
-		}
-		throw new Error(`Failed to load blog post: ${result.status}`);
-	}
-	if (!(result.post && isPublished(result.post))) {
-		notFound();
-	}
-	return result.post;
-});
-
-export function getPostModifiedAt(
-	post: Pick<Post, "publishedAt" | "updatedAt">
-) {
-	const publishedAt = new Date(post.publishedAt);
-	const updatedAt = post.updatedAt ? new Date(post.updatedAt) : publishedAt;
-	return updatedAt >= publishedAt && updatedAt.getTime() <= Date.now()
-		? updatedAt.toISOString()
-		: publishedAt.toISOString();
-}
-
-export function isPublished(post: {
-	publishedAt: Date | string;
-	status?: string;
-}) {
-	const publishedAt = new Date(post.publishedAt).getTime();
+export function isPublished(
+	post: Pick<Post, "publishedAt" | "status">
+): boolean {
+	const publishedAt = post.publishedAt.getTime();
 	return (
 		post.status !== "draft" &&
 		Number.isFinite(publishedAt) &&
 		publishedAt <= Date.now()
 	);
+}
+
+export const getPosts = cache(async (): Promise<Post[]> => {
+	const client = createClient();
+	if (!client) {
+		return [];
+	}
+
+	const pages = await client.posts.list({
+		limit: 100,
+		order: "desc",
+		status: "published",
+	});
+	const posts: Post[] = [];
+	for await (const page of pages) {
+		posts.push(...page.result.posts);
+	}
+	return posts
+		.filter(isPublished)
+		.sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime());
+});
+
+export const getSinglePost = cache(async (slug: string): Promise<Post> => {
+	const client = createClient();
+	if (!client) {
+		notFound();
+	}
+
+	let post: Post;
+	try {
+		({ post } = await client.posts.get({
+			identifier: slug,
+			status: "published",
+		}));
+	} catch (error) {
+		if (error instanceof NotFoundError) {
+			notFound();
+		}
+		throw error;
+	}
+	if (!isPublished(post)) {
+		notFound();
+	}
+	return post;
+});
+
+export function getPostModifiedAt(
+	post: Pick<Post, "publishedAt" | "updatedAt">
+): string {
+	const { publishedAt, updatedAt } = post;
+	return updatedAt.getTime() >= publishedAt.getTime() &&
+		updatedAt.getTime() <= Date.now()
+		? updatedAt.toISOString()
+		: publishedAt.toISOString();
 }

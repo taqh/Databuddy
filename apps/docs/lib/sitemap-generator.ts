@@ -1,6 +1,6 @@
 import type { MetadataRoute } from "next";
 import { SITE_URL } from "@/app/util/constants";
-import { getPostModifiedAt, getPosts, isPublished } from "@/lib/blog-query";
+import { getPostModifiedAt, getPosts } from "@/lib/blog-query";
 import { getAllCompetitorSlugs } from "@/lib/comparison-config";
 import { source } from "@/lib/source";
 
@@ -47,15 +47,19 @@ export async function generateSitemapEntries(): Promise<MetadataRoute.Sitemap> {
 		url: `${SITE_URL}${path}`,
 	}));
 
-	const blogData = await getPosts();
-	if (!("error" in blogData)) {
-		entries.push(
-			...blogData.posts.filter(isPublished).map((post) => ({
-				url: `${SITE_URL}/blog/${post.slug}`,
-				lastModified: getPostModifiedAt(post),
-			}))
+	const posts = await getPosts().catch((error: unknown) => {
+		console.error(
+			"Failed to list blog posts for sitemap:",
+			error instanceof Error ? error.message : "Unknown error"
 		);
-	}
+		return [];
+	});
+	entries.push(
+		...posts.map((post) => ({
+			url: `${SITE_URL}/blog/${post.slug}`,
+			lastModified: getPostModifiedAt(post),
+		}))
+	);
 
 	return entries;
 }

@@ -1,5 +1,5 @@
 import { SITE_URL } from "@/app/util/constants";
-import { getPosts, isPublished } from "@/lib/blog-query";
+import { getPosts } from "@/lib/blog-query";
 
 export const revalidate = 3600;
 
@@ -13,18 +13,7 @@ function escapeXml(value: string) {
 }
 
 export async function GET() {
-	const result = await getPosts();
-	if ("error" in result && !result.unconfigured) {
-		throw new Error(
-			`Failed to load blog posts: ${result.status} ${result.statusText}`
-		);
-	}
-	const posts = ("error" in result ? [] : result.posts)
-		.filter(isPublished)
-		.sort(
-			(a, b) =>
-				new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime()
-		);
+	const posts = await getPosts();
 
 	const items = posts
 		.map((post) => {

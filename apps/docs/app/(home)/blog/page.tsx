@@ -5,6 +5,7 @@ import {
 	UserIcon,
 } from "@databuddy/ui/icons";
 import type { Metadata } from "next";
+import type { Post } from "@usemarble/sdk/models";
 import Image from "next/image";
 import Link from "next/link";
 import { Footer } from "@/components/footer";
@@ -14,7 +15,7 @@ import Section from "@/components/landing/section";
 import { SciFiCard } from "@/components/scifi-card";
 import { StructuredData } from "@/components/structured-data";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { getPosts, isPublished, type Post } from "@/lib/blog-query";
+import { getPosts } from "@/lib/blog-query";
 
 export const revalidate = 3600;
 
@@ -164,18 +165,7 @@ function BlogPostCard({ post }: { post: Post }) {
 }
 
 export default async function BlogPage() {
-	const result = await getPosts();
-	if ("error" in result && !result.unconfigured) {
-		throw new Error(
-			`Failed to load blog posts: ${result.status} ${result.statusText}`
-		);
-	}
-	const sortedPosts = ("error" in result ? [] : result.posts)
-		.filter(isPublished)
-		.sort(
-			(a, b) =>
-				new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime()
-		);
+	const sortedPosts = await getPosts();
 
 	return (
 		<div className="overflow-hidden">
