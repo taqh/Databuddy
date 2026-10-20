@@ -19,15 +19,9 @@ function createClient(): Marble | undefined {
 	return new Marble({ apiKey, serverURL: serverURL || undefined });
 }
 
-export function isPublished(
-	post: Pick<Post, "publishedAt" | "status">
-): boolean {
+export function isPublished(post: Pick<Post, "publishedAt">): boolean {
 	const publishedAt = post.publishedAt.getTime();
-	return (
-		post.status !== "draft" &&
-		Number.isFinite(publishedAt) &&
-		publishedAt <= Date.now()
-	);
+	return Number.isFinite(publishedAt) && publishedAt <= Date.now();
 }
 
 export const getPosts = cache(async (): Promise<Post[]> => {

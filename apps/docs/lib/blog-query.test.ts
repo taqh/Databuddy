@@ -112,7 +112,7 @@ describe("Marble blog query", () => {
 		expect(request.headers.get("Authorization")).toBe("test-token");
 	});
 
-	test("returns every page in descending publish order and filters unpublished content", async () => {
+	test("returns every page in descending publish order and filters future content", async () => {
 		process.env.MARBLE_API_KEY = "test-token";
 		Reflect.deleteProperty(process.env, "MARBLE_API_URL");
 		const older = post({
@@ -126,9 +126,7 @@ describe("Marble blog query", () => {
 			publishedAt: new Date("2024-03-01T00:00:00.000Z"),
 		});
 		const fetch = spyOn(globalThis, "fetch")
-			.mockResolvedValueOnce(
-				listResponse([older, post({ status: "draft" })], 1, 2)
-			)
+			.mockResolvedValueOnce(listResponse([older], 1, 2))
 			.mockResolvedValueOnce(
 				listResponse([newer, post({ publishedAt: new Date("2999-01-01") })], 2)
 			);
@@ -177,7 +175,7 @@ describe("Marble blog query", () => {
 		);
 	});
 
-	test("maps missing and unpublished posts to 404 while outages propagate", async () => {
+	test("maps missing and future posts to 404 while outages propagate", async () => {
 		process.env.MARBLE_API_KEY = "test-token";
 		const fetch = spyOn(globalThis, "fetch");
 		fetch.mockResolvedValueOnce(
@@ -186,15 +184,12 @@ describe("Marble blog query", () => {
 		await expect(getSinglePost("missing")).rejects.toThrow(
 			"NEXT_HTTP_ERROR_FALLBACK;404"
 		);
-		for (const [slug, value] of [
-			["draft", post({ status: "draft" })],
-			["future", post({ publishedAt: new Date("2999-01-01") })],
-		] as const) {
-			fetch.mockResolvedValueOnce(Response.json({ post: value }));
-			await expect(getSinglePost(slug)).rejects.toThrow(
-				"NEXT_HTTP_ERROR_FALLBACK;404"
-			);
-		}
+		fetch.mockResolvedValueOnce(
+			Response.json({ post: post({ publishedAt: new Date("2999-01-01") }) })
+		);
+		await expect(getSinglePost("future")).rejects.toThrow(
+			"NEXT_HTTP_ERROR_FALLBACK;404"
+		);
 		fetch.mockResolvedValueOnce(
 			Response.json(
 				{ error: "server_error", message: "Unavailable" },
@@ -206,15 +201,21 @@ describe("Marble blog query", () => {
 		});
 		fetch.mockResolvedValueOnce(Response.json({ post: post() }));
 		expect(await getSinglePost("published")).toEqual(post());
+		const publishedCall = fetch.mock.calls.at(-1);
+		if (!publishedCall) {
+			throw new Error("Marble did not request the published post");
+		}
+		expect(
+			new URL(
+				new Request(publishedCall[0], publishedCall[1]).url
+			).searchParams.get("status")
+		).toBe("published");
 	});
 
-	test("rejects draft, future, and invalid publish dates", () => {
-		expect(isPublished(post())).toBe(true);
-		expect(isPublished(post({ status: "draft" }))).toBe(false);
-		expect(isPublished(post({ publishedAt: new Date("2999-01-01") }))).toBe(
-			false
-		);
-		expect(isPublished(post({ publishedAt: new Date("invalid") }))).toBe(false);
+	test("rejects future and invalid publish dates", () => {
+		expect(isPublished({ publishedAt })).toBe(true);
+		expect(isPublished({ publishedAt: new Date("2999-01-01") })).toBe(false);
+		expect(isPublished({ publishedAt: new Date("invalid") })).toBe(false);
 	});
 
 	test("uses valid updates and falls back for invalid or future dates", () => {

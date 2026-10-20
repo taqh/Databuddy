@@ -470,15 +470,15 @@ describe("search discovery", () => {
 				fields: {},
 				content: "<p>Example content</p>",
 			};
-			const draft: Post = {
+			const future: Post = {
 				...example,
-				id: "draft",
-				slug: "draft",
-				status: "draft",
+				id: "future",
+				slug: "future",
+				publishedAt: new Date("2999-01-01"),
 			};
 			fetch.mockResolvedValueOnce(
 				Response.json({
-					posts: [example, draft],
+					posts: [example, future],
 					pagination: {
 						limit: 100,
 						currentPage: 1,
